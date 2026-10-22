@@ -72,11 +72,33 @@ jobs:
           git config --global user.email "no-reply@github.com"
           git config --global user.name "Github Actions"
 
-      - name: Apply patches
-        # --refresh-dependencies works around transient 502s from maven.leafmc.one
-        # (the upstream Leaf maven mirror has occasional downtime). Gradle will
-        # re-resolve each artifact; cached-but-stale entries are ignored.
-        run: ./gradlew applyAllPatches --stacktrace --no-daemon --refresh-dependencies
+      - name: Apply patches (with retry for upstream maven outages)
+        # maven.leafmc.one (the Leaf upstream maven mirror) occasionally returns
+        # HTTP 502 Bad Gateway. The exact dev-SNAPSHOT versions of
+        # ConfigurationMaster-API, spark-api, and spark-paper that this build
+        # needs are not mirrored on JitPack or Sonatype OSS, so we cannot
+        # switch repositories. Instead, we retry the whole applyAllPatches task
+        # up to 4 times with a 60s pause between attempts. --refresh-dependencies
+        # makes Gradle ignore any cached-but-failed resolution from the prior
+        # attempt.
+        run: |
+          set +e
+          for attempt in 1 2 3 4; do
+            echo "::group::Apply patches — attempt $attempt/4"
+            ./gradlew applyAllPatches --stacktrace --no-daemon --refresh-dependencies
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -eq 0 ]; then
+              echo "✅ applyAllPatches succeeded on attempt $attempt"
+              exit 0
+            fi
+            if [ $attempt -lt 4 ]; then
+              echo "❌ applyAllPatches failed on attempt $attempt (exit $rc); retrying in 60s"
+              sleep 60
+            fi
+          done
+          echo "::error::applyAllPatches failed after 4 attempts. Most likely cause: maven.leafmc.one is returning 502 Bad Gateway. Wait for the upstream Leaf maven mirror to recover, then re-run this workflow manually from the Actions tab."
+          exit 1
 
       - name: Create Paperclip JAR
         run: ./gradlew createPaperclipJar --stacktrace --no-daemon
