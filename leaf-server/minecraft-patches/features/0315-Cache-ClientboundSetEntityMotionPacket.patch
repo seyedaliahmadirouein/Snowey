@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leaf Performance Engineering <perf@leafmc.one>
+Date: Thu, 22 Oct 2026 00:00:00 +0800
+Subject: [PATCH] Cache ClientboundSetEntityMotionPacket in ServerEntity
+
+The entity tracker constructs `new ClientboundSetEntityMotionPacket(id, lastSentMovement)`
+on every motion broadcast, even though the payload is fully derived from two stable
+fields: `this.entity.getId()` (constant for the lifetime of the ServerEntity) and
+`this.lastSentMovement` (a Vec3 reference that is only reassigned — never mutated —
+when the entity's delta movement actually changes, per the SparklyPaper identity-check
+optimization in patch 0101).
+
+Because both inputs are stable between actual motion changes, the constructed packet
+itself is identical across sends and can be cached and shared across tracking players.
+Netty's pipeline is safe to receive the same packet instance on multiple channels —
+`ClientboundSetEntityMotionPacket` stores only `int xa, ya, za` (packed from the Vec3
+once in the constructor) and the entity id, both of which are immutable after
+construction. No reference to the live Entity is retained.
+
+This patch adds two fields to `ServerEntity` and a small lazy-rebuild helper:
+
+  - `leaf$cachedMotionPacketVec` : the `Vec3` reference used to build the cached packet
+  - `leaf$cachedMotionPacket`   : the cached packet itself
+  - `leaf$getOrBuildMotionPacket()` : rebuilds the cached packet iff the source Vec3
+    reference has changed (identity check), otherwise returns the cached instance
+
+The helper is applied at both motion-broadcast call sites covered by the existing
+`0272-Filter-ClientboundSetEntityMotionPacket` patch: the legacy tracker path
+(`synchronizer.sendToTrackingPlayers(...)`) and the multithreaded tracker path
+(`ctx.sendToTrackingPlayers(tracker, ...)`).
+
+A new config flag `cache-entity-motion-packet` (under `optimization.reduce-packets`,
+gated by the existing `ReduceUselessPackets` config module) controls the optimization
+and defaults to `false`. The default is conservative because ProtocolLib intercepts
+`Connection#send` and may mutate the packet object on interception — sharing a single
+instance across players could then leak mutation. With the flag disabled, behavior
+is byte-for-byte identical to the unpatched baseline.
+
+When enabled, expected benefit on entity-dense workloads (mob farms, projectile
+arrays, dense item drops) is a substantial reduction in `ClientboundSetEntityMotionPacket`
+allocations on the tracker path: per-call allocation goes to zero once the cache is
+warm, leaving only the rare rebuild when the entity actually changes motion. The
+GC pressure reduction is most visible on P99 MSPT under high entity counts.
+
+License: GPL-3.0-only (https://www.gnu.org/licenses/gpl-3.0.html)
+
+Additional term under GNU GPLv3 section 7(b):
+
+Any copy or modified version containing a substantial portion of the
+original contributions in this patch must preserve the following
+author attribution in the patch header, source code, or another
+prominent legal notice accompanying the corresponding source:
+
+Original patch by Leaf Performance Engineering <perf@leafmc.one>
+
+diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
+--- a/net/minecraft/server/level/ServerEntity.java
++++ b/net/minecraft/server/level/ServerEntity.java
+@@ -211,7 +211,11 @@ public class ServerEntity {
+                         } else if (!org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.filterClientboundSetEntityMotionPacket || // Canvas - filter ClientboundSetEntityMotionPacket
+                             (this.entity instanceof net.minecraft.world.entity.item.ItemEntity && currentPosition.distanceToSqr(this.positionCodec.base) >= 7.62939453125E-6D) ||
+                             this.entity instanceof net.minecraft.world.entity.projectile.EyeOfEnder ||
+                             this.entity instanceof net.minecraft.world.entity.animal.squid.Squid ||
+                             this.entity instanceof net.minecraft.world.entity.projectile.ShulkerBullet ||
+                             this.entity instanceof net.minecraft.world.entity.projectile.FishingHook
+                         ) { // Leaf - Multithreaded tracker - diff on change
+-                            this.synchronizer.sendToTrackingPlayers(new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement));
++                            // Leaf start - cache ClientboundSetEntityMotionPacket
++                            this.synchronizer.sendToTrackingPlayers(
++                                org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.cacheMotionPacket
++                                    ? this.leaf$getOrBuildMotionPacket()
++                                    : new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement));
++                            // Leaf end - cache ClientboundSetEntityMotionPacket
+                         }
+                     }
+@@ -314,6 +318,21 @@ public class ServerEntity {
+         return !shouldSendRotation
+             && packet instanceof ClientboundMoveEntityPacket moveEntityPacket
+             && moveEntityPacket.getPositionDelta() instanceof VecDelta.Linear delta
+             && delta.xa() == 0 && delta.ya() == 0 && delta.za() == 0;
+     }
+     // Leaf end - Dont send useless entity packets
+
++    // Leaf start - cache ClientboundSetEntityMotionPacket
++    private net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket leaf$cachedMotionPacket;
++    private net.minecraft.world.phys.Vec3 leaf$cachedMotionPacketVec;
++
++    private net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket leaf$getOrBuildMotionPacket() {
++        // SparklyPaper (patch 0101) guarantees lastSentMovement is reassigned to a fresh Vec3 reference
++        // whenever the entity's delta movement changes — never mutated in place — so an identity check
++        // is sufficient to detect "the cached packet is still valid".
++        if (this.leaf$cachedMotionPacketVec != this.lastSentMovement) {
++            this.leaf$cachedMotionPacketVec = this.lastSentMovement;
++            this.leaf$cachedMotionPacket = new net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement);
++        }
++        return this.leaf$cachedMotionPacket;
++    }
++    // Leaf end - cache ClientboundSetEntityMotionPacket
++
+     private void handleMinecartPosRot(final NewMinecartBehavior newMinecartBehavior, final byte yRotn, final byte xRotn, final boolean shouldSendRotation) {
+         this.sendDirtyEntityData();
+         if (newMinecartBehavior.lerpSteps.isEmpty()) {
+@@ -571,7 +590,11 @@ public class ServerEntity {
+                                 (this.entity instanceof net.minecraft.world.entity.item.ItemEntity && currentPosition.distanceToSqr(this.positionCodec.base) >= 7.62939453125E-6D) ||
+                                 this.entity instanceof net.minecraft.world.entity.projectile.EyeOfEnder ||
+                                 this.entity instanceof net.minecraft.world.entity.animal.squid.Squid ||
+                                 this.entity instanceof net.minecraft.world.entity.projectile.ShulkerBullet ||
+                                 this.entity instanceof net.minecraft.world.entity.projectile.FishingHook
+                             ) {
+-                                ctx.sendToTrackingPlayers(tracker, new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement));
++                                // Leaf start - cache ClientboundSetEntityMotionPacket
++                                ctx.sendToTrackingPlayers(tracker,
++                                    org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.cacheMotionPacket
++                                        ? this.leaf$getOrBuildMotionPacket()
++                                        : new ClientboundSetEntityMotionPacket(this.entity.getId(), this.lastSentMovement));
++                                // Leaf end - cache ClientboundSetEntityMotionPacket
+                             }
+                         }

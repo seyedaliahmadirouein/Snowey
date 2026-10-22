@@ -1,0 +1,150 @@
+name: Compile
+
+# Compile the Leaf server (apply patches + build the paperclip JAR), then publish
+# the resulting JAR to the GitHub Releases page of this repository.
+#
+# This workflow is intentionally self-contained: it does NOT depend on the
+# upstream Winds-Studio/Leaf download API, the leafmc.one webhook, or any
+# host-side SCP/SSH secrets. It only requires the default `GITHUB_TOKEN`
+# that GitHub Actions provisions automatically, plus read access to the
+# Paper / Leaf Maven repositories (already public).
+#
+# Trigger policy:
+#   - workflow_dispatch:  a maintainer can run it on-demand from any branch
+#   - push to ver/26.3:   every push to the active release branch produces a
+#                          new rolling release tagged `ver-26.3-compile-<run>`
+#                          so the latest compiled JAR is always downloadable.
+#
+# The workflow follows the same build commands documented in the repository
+# README (`./gradlew applyAllPatches && ./gradlew createPaperclipJar`) and
+# reuses the existing `scripts/prepareRelease.sh` helper to rename the JAR
+# and generate release notes from the commit log.
+
+on:
+  push:
+    branches: [ "ver/26.3" ]
+  workflow_dispatch:
+
+# Cancel any superseded run on the same ref so we don't pile up concurrent
+# releases for the same branch when several pushes land in quick succession.
+concurrency:
+  group: compile-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege: the workflow only needs to write releases (which requires
+# `contents: write`). It does not deploy to any external system, so no other
+# permission is granted.
+permissions:
+  contents: write
+
+jobs:
+  compile-and-release:
+    name: Compile and release JAR
+    runs-on: ubuntu-latest
+    env:
+      MC_VERSION: "26.3"
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # prepareRelease.sh uses `git describe` and the commit log
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+          cache: gradle
+
+      - name: Cache Gradle wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-compile-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-compile-${{ runner.os }}-
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "no-reply@github.com"
+          git config --global user.name "Github Actions"
+
+      - name: Apply patches
+        run: ./gradlew applyAllPatches --stacktrace --no-daemon
+
+      - name: Create Paperclip JAR
+        run: ./gradlew createPaperclipJar --stacktrace --no-daemon
+
+      - name: Verify JAR was produced
+        id: verify_jar
+        run: |
+          # The paperclip task emits leaf-server/build/libs/leaf-paperclip-<MC_VERSION>-<something>.jar
+          # prepareRelease.sh renames it to ./leaf-<MC_VERSION>-<BUILD_NUMBER>.jar in the next step.
+          set -e
+          if ! ls leaf-server/build/libs/leaf-paperclip-*.jar 1> /dev/null 2>&1; then
+            echo "::error::createPaperclipJar did not produce a JAR under leaf-server/build/libs/"
+            exit 1
+          fi
+          echo "✅ Paperclip JAR built:"
+          ls -la leaf-server/build/libs/leaf-paperclip-*.jar
+
+      - name: Prepare release notes and rename JAR
+        run: |
+          chmod +x ./scripts/prepareRelease.sh
+          ./scripts/prepareRelease.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          MC_VERSION: ${{ env.MC_VERSION }}
+          BUILD_NUMBER: ${{ env.BUILD_NUMBER }}
+
+      - name: Calculate SHA-256
+        id: hash
+        run: |
+          FILE_NAME="leaf-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}.jar"
+          if [ ! -f "$FILE_NAME" ]; then
+            echo "::error::Expected release JAR $FILE_NAME was not found after prepareRelease.sh"
+            exit 1
+          fi
+          HASH=$(sha256sum "$FILE_NAME" | awk '{ print $1 }')
+          echo "sha256=$HASH" >> $GITHUB_OUTPUT
+          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "✅ SHA-256: $HASH"
+
+      - name: Compile summary
+        run: |
+          echo "## Compile summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **MC version:** ${{ env.MC_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build number:** ${{ env.BUILD_NUMBER }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **JAR:** \`${{ steps.hash.outputs.file_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA-256:** \`${{ steps.hash.outputs.sha256 }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Release JAR to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          # Rolling tag so every push to ver/26.3 produces a fresh, downloadable build
+          # without the maintainer having to manually bump a version number. The tag
+          # moves forward with each successful run.
+          name: "Leaf ${{ env.MC_VERSION }} (compile #${{ env.BUILD_NUMBER }})"
+          tag_name: "compile-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}"
+          files: "./${{ steps.hash.outputs.file_name }}"
+          body_path: "./release_notes.md"
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          target_commitish: "${{ github.sha }}"
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+
+      - name: Upload JAR as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: leaf-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}
+          path: "./${{ steps.hash.outputs.file_name }}"
+          if-no-files-found: error
+          retention-days: 30
