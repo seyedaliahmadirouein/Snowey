@@ -73,7 +73,10 @@ jobs:
           git config --global user.name "Github Actions"
 
       - name: Apply patches
-        run: ./gradlew applyAllPatches --stacktrace --no-daemon
+        # --refresh-dependencies works around transient 502s from maven.leafmc.one
+        # (the upstream Leaf maven mirror has occasional downtime). Gradle will
+        # re-resolve each artifact; cached-but-stale entries are ignored.
+        run: ./gradlew applyAllPatches --stacktrace --no-daemon --refresh-dependencies
 
       - name: Create Paperclip JAR
         run: ./gradlew createPaperclipJar --stacktrace --no-daemon
