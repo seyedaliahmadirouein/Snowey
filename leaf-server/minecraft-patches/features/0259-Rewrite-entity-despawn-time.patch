@@ -43,11 +43,11 @@ index 81e72a1cd2de1bfeb4c78999148dd2e95ed782c2..2b90941bf6824719531582c27e640514
                  PlatformHooks.get().unloadEntity(entity);
                  if (entity.isVehicle()) {
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-index 0d8ca784122c70d74ad49c20821b535e1cb967a9..b5b3c91aee7e143e6879a2216ef84d7e10c88399 100644
+index 465169fd8bbfabbb2a22772d101519583dc2b470..e46001555d0a2086e834878e4d4f775093b13631 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 @@ -51,6 +51,7 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
-     protected final ConcurrentChainedLong2ReferenceHashTable<Entity> entityById = new ConcurrentChainedLong2ReferenceHashTable<>();
+     protected final ConcurrentChainedInt2ReferenceHashTable<Entity> entityById = ConcurrentChainedInt2ReferenceHashTable.createWithCapacity(ConcurrentChainedInt2ReferenceHashTable.defaultCapacity(), 0.5f);
      protected final ConcurrentHashMap<UUID, Entity> entityByUUID = new ConcurrentHashMap<>();
      protected final EntityList accessibleEntities = new EntityList();
 +    public final it.unimi.dsi.fastutil.objects.ReferenceArrayList<Entity> weakEntityList = new it.unimi.dsi.fastutil.objects.ReferenceArrayList<>(); // Leaf - Rewrite entity despawn time
@@ -132,7 +132,7 @@ index 8a1a796bbf219686491e443db48af1f9ed3aa46f..3d7e7d5b028a855a70d6513367a06933
      }
  
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index 5ac99d7f7d722c39b6ccab578361aa6b30a275bb..0ee92958913826c41e1e16c335c8ae5f112e937c 100644
+index 79918edbd5a5a08d4810fe155a1fbf75c15fb839..5f5875cf2b67ce0c86c76b16d1228804a49a328f 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
 @@ -388,12 +388,14 @@ public abstract class Entity
@@ -167,7 +167,7 @@ index 5ac99d7f7d722c39b6ccab578361aa6b30a275bb..0ee92958913826c41e1e16c335c8ae5f
      }
  
      public boolean isColliding(final BlockPos pos, final BlockState state) {
-@@ -914,12 +918,19 @@ public abstract class Entity
+@@ -915,12 +919,19 @@ public abstract class Entity
      }
  
      public void tick() {
@@ -187,7 +187,7 @@ index 5ac99d7f7d722c39b6ccab578361aa6b30a275bb..0ee92958913826c41e1e16c335c8ae5f
          this.baseTick();
      }
  
-@@ -934,8 +945,55 @@ public abstract class Entity
+@@ -935,8 +946,55 @@ public abstract class Entity
          }
  
          this.tickCount++;
@@ -244,7 +244,7 @@ index 5ac99d7f7d722c39b6ccab578361aa6b30a275bb..0ee92958913826c41e1e16c335c8ae5f
  
      // CraftBukkit start
      public void postTick() {
-@@ -2857,7 +2915,7 @@ public abstract class Entity
+@@ -2858,7 +2916,7 @@ public abstract class Entity
              // Leaf end - Fix Pufferfish and Purpur patches - Use effective default value for max air supply
                  output.putInt("Bukkit.MaxAirSupply", this.getMaxAirSupply());
              }
@@ -253,7 +253,7 @@ index 5ac99d7f7d722c39b6ccab578361aa6b30a275bb..0ee92958913826c41e1e16c335c8ae5f
              // CraftBukkit end
              output.storeNullable("CustomName", ComponentSerialization.CODEC, this.getCustomName());
              if (this.isCustomNameVisible()) {
-@@ -5602,7 +5660,8 @@ public abstract class Entity
+@@ -5603,7 +5661,8 @@ public abstract class Entity
      public boolean shouldBeSaved() {
          return (this.removalReason == null || this.removalReason.shouldSave())
              && !this.isPassenger()

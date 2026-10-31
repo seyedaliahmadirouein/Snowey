@@ -152,10 +152,10 @@ index fa322df502d1e6c6d603730372c572f62e70306a..c3025e2d66b2b7894483c91295ef6de6
          return ObjectSets.unmodifiable(chunks);
      }
 diff --git a/net/minecraft/server/MinecraftServer.java b/net/minecraft/server/MinecraftServer.java
-index 8850da9606aba038bc4d148349b9bdfa063f2be6..3defb5c72f566c758f4252bbd740349dbcb15249 100644
+index 09d20c03ab1940e783d7aa9330fe9d40160adb14..d97a02db91df57209c203ad2dea2deff45d94c93 100644
 --- a/net/minecraft/server/MinecraftServer.java
 +++ b/net/minecraft/server/MinecraftServer.java
-@@ -1955,6 +1955,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -1958,6 +1958,8 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          // Leaf end - SparklyPaper - parallel world ticking
          this.isIteratingOverLevels = false; // Paper - Throw exception on world create while being ticked
  
@@ -164,7 +164,7 @@ index 8850da9606aba038bc4d148349b9bdfa063f2be6..3defb5c72f566c758f4252bbd740349d
          profiler.popPush("connection");
          this.tickConnection();
          profiler.popPush("players");
-@@ -2046,6 +2048,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
+@@ -2049,6 +2051,7 @@ public abstract class MinecraftServer extends ReentrantBlockableEventLoop<TickTa
          Map<ResourceKey<Level>, ServerLevel> newLevels = Maps.newLinkedHashMap(oldLevels);
          newLevels.remove(level.dimension());
          if (org.dreeam.leaf.config.modules.async.SparklyPaperParallelWorldTicking.enabled) level.tickExecutor.shutdown(); // Leaf - SparklyPaper - parallel world ticking (We remove it in here instead of ServerLevel.close() because ServerLevel.close() is never called!)
@@ -984,10 +984,10 @@ index ab8145848a9853bdb6ca92ea37fc6f84b8ee3afc..8a1a796bbf219686491e443db48af1f9
  
      @Override
 diff --git a/net/minecraft/world/entity/Entity.java b/net/minecraft/world/entity/Entity.java
-index eb23f238c272f3c4c4f05e2e9a102e293db27e9f..f2fa0864306d5ad6c8be067a3c6d198507cf13d5 100644
+index 0c3c998c92d26951cbe5dde4ca4ff6e1a459b8ff..ec258f86b91ff4c34ca2e684112b54caf7045450 100644
 --- a/net/minecraft/world/entity/Entity.java
 +++ b/net/minecraft/world/entity/Entity.java
-@@ -905,6 +905,11 @@ public abstract class Entity
+@@ -906,6 +906,11 @@ public abstract class Entity
          }
      }
  
@@ -999,7 +999,7 @@ index eb23f238c272f3c4c4f05e2e9a102e293db27e9f..f2fa0864306d5ad6c8be067a3c6d1985
      public void updateDataBeforeSync() {
      }
  
-@@ -1359,6 +1364,14 @@ public abstract class Entity
+@@ -1360,6 +1365,14 @@ public abstract class Entity
      public void recordMovement(final MoverType moverType, final Vec3 movement) {
          if (moverType.isServerAndClientSimulated() || this.getMoveSimulationType() == MoveSimulationType.SERVER_AND_CLIENT) {
              this.interpolationHandler.applyPredictedMovement(movement);
@@ -1014,7 +1014,7 @@ index eb23f238c272f3c4c4f05e2e9a102e293db27e9f..f2fa0864306d5ad6c8be067a3c6d1985
          }
      }
  
-@@ -1403,6 +1416,14 @@ public abstract class Entity
+@@ -1404,6 +1417,14 @@ public abstract class Entity
              effectState.getBlock().bounceOn(this.level, effectState, this.getBlockPosBelowThatAffectsMyMovement(), this, this.fallDistance);
              this.gameEvent(GameEvent.BOUNCE);
              this.syncPosition = true;
@@ -1029,7 +1029,7 @@ index eb23f238c272f3c4c4f05e2e9a102e293db27e9f..f2fa0864306d5ad6c8be067a3c6d1985
          }
  
          this.setDeltaMovement(movementAfterBounce);
-@@ -5373,6 +5394,11 @@ public abstract class Entity
+@@ -5374,6 +5395,11 @@ public abstract class Entity
              this.setBoundingBox(this.makeBoundingBox());
          }
          // Paper end - Block invalid positions and bounding box
