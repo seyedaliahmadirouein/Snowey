@@ -208,6 +208,7 @@ jobs:
           exit 1
 
       - name: Upload JAR as workflow artifact
+        if: always()  # Always upload the artifact so the JAR is downloadable from the Actions run even if release upload fails
         uses: actions/upload-artifact@v4
         with:
           name: leaf-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}
