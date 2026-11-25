@@ -56,7 +56,7 @@ Original patch by Leaf Performance Engineering <perf@leafmc.one>
 diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server/level/ServerEntity.java
 --- a/net/minecraft/server/level/ServerEntity.java
 +++ b/net/minecraft/server/level/ServerEntity.java
-@@ -211,7 +211,11 @@ public class ServerEntity {
+@@ -214,10 +214,15 @@ public class ServerEntity {
                          } else if (!org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.filterClientboundSetEntityMotionPacket || // Canvas - filter ClientboundSetEntityMotionPacket
                              (this.entity instanceof net.minecraft.world.entity.item.ItemEntity && currentPosition.distanceToSqr(this.positionCodec.base) >= 7.62939453125E-6D) ||
                              this.entity instanceof net.minecraft.world.entity.projectile.EyeOfEnder ||
@@ -73,14 +73,14 @@ diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server
 +                            // Leaf end - cache ClientboundSetEntityMotionPacket
                          }
                      }
-@@ -314,6 +318,21 @@ public class ServerEntity {
+@@ -331,8 +336,24 @@ public class ServerEntity {
          return !shouldSendRotation
              && packet instanceof ClientboundMoveEntityPacket moveEntityPacket
              && moveEntityPacket.getPositionDelta() instanceof VecDelta.Linear delta
              && delta.xa() == 0 && delta.ya() == 0 && delta.za() == 0;
      }
      // Leaf end - Dont send useless entity packets
-
+ 
 +    // Leaf start - cache ClientboundSetEntityMotionPacket
 +    private net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket leaf$cachedMotionPacket;
 +    private net.minecraft.world.phys.Vec3 leaf$cachedMotionPacketVec;
@@ -98,9 +98,8 @@ diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server
 +    // Leaf end - cache ClientboundSetEntityMotionPacket
 +
      private void handleMinecartPosRot(final NewMinecartBehavior newMinecartBehavior, final byte yRotn, final byte xRotn, final boolean shouldSendRotation) {
-         this.sendDirtyEntityData();
-         if (newMinecartBehavior.lerpSteps.isEmpty()) {
-@@ -571,7 +590,11 @@ public class ServerEntity {
+@@ -574,10 +595,15 @@ public class ServerEntity {
+                             } else if (!org.dreeam.leaf.config.modules.opt.ReduceUselessPackets.filterClientboundSetEntityMotionPacket || // Canvas - filter ClientboundSetEntityMotionPacket
                                  (this.entity instanceof net.minecraft.world.entity.item.ItemEntity && currentPosition.distanceToSqr(this.positionCodec.base) >= 7.62939453125E-6D) ||
                                  this.entity instanceof net.minecraft.world.entity.projectile.EyeOfEnder ||
                                  this.entity instanceof net.minecraft.world.entity.animal.squid.Squid ||
@@ -116,3 +115,5 @@ diff --git a/net/minecraft/server/level/ServerEntity.java b/net/minecraft/server
 +                                // Leaf end - cache ClientboundSetEntityMotionPacket
                              }
                          }
+-- 
+2.47.3
