@@ -151,6 +151,7 @@ jobs:
           echo "- **SHA-256:** \`${{ steps.hash.outputs.sha256 }}\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Release JAR to GitHub Releases
+        id: gh_release
         uses: softprops/action-gh-release@v2
         with:
           # Rolling tag so every push to ver/26.3 produces a fresh, downloadable build
@@ -165,6 +166,46 @@ jobs:
           draft: false
           prerelease: true
           generate_release_notes: false
+        # softprops/action-gh-release@v2 retries internally 3 times, but GitHub's
+        # releases API had multi-minute 500/502 outages during runs #11 and #12.
+        # Use continue-on-error + an explicit retry step below for resilience.
+        continue-on-error: true
+
+      - name: Retry release upload via gh CLI (if action-gh-release failed)
+        if: steps.gh_release.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="compile-${MC_VERSION}-${BUILD_NUMBER}"
+          FILE="./leaf-${MC_VERSION}-${BUILD_NUMBER}.jar"
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            echo "::group::Release upload attempt $attempt/10"
+            # If a release for this tag already exists (from the failed action-gh-release
+            # step), delete it first so we get a clean upload rather than an orphan
+            # release with no assets.
+            existing_id=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq '.id' 2>/dev/null || true)
+            if [ -n "$existing_id" ]; then
+              echo "Deleting orphan release $existing_id (tag $TAG) before retry"
+              gh api -X DELETE "/repos/${GITHUB_REPOSITORY}/releases/${existing_id}" || true
+              gh api -X DELETE "/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" || true
+              sleep 5
+            fi
+            # Create the release with the JAR attached.
+            if gh release create "$TAG" "$FILE" \
+                --title "Leaf ${MC_VERSION} (compile #${BUILD_NUMBER})" \
+                --notes-file ./release_notes.md \
+                --prerelease \
+                --target "$GITHUB_SHA"; then
+              echo "✅ Release $TAG created with asset on attempt $attempt"
+              exit 0
+            fi
+            echo "❌ Attempt $attempt failed; sleeping $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to create release after 10 attempts. GitHub's releases API may be down. Re-run this workflow manually when GitHub is healthy."
+          exit 1
 
       - name: Upload JAR as workflow artifact
         uses: actions/upload-artifact@v4
