@@ -18,7 +18,7 @@ echo "✨Current branch: $CURRENT_BRANCH"
 
 # Latest tag name
 LATEST_TAG=$(git describe --tags --abbrev=0)
-if [ -z $LATEST_TAG ]; then
+if [ -z "$LATEST_TAG" ]; then
   LATEST_TAG=$(git rev-list --max-parents=0 HEAD)
   echo "⚠️No previous release found. Using initial commit."
 else
@@ -31,7 +31,7 @@ echo "✨Last release commit: $LAST_RELEASE_COMMIT"
 
 # Commits log
 COMMIT_LOG=$(git log $LAST_RELEASE_COMMIT..HEAD --pretty=format:"- [\`%h\`](https://github.com/${GITHUB_REPO}/commit/%H) %s (%an)")
-if [ -z $COMMIT_LOG ]; then
+if [ -z "$COMMIT_LOG" ]; then
   COMMIT_LOG="⚠️No new commits since $LATEST_TAG."
 else
   echo "✅Commits log generated"
@@ -51,10 +51,10 @@ echo "" >> $RELEASE_NOTES
 
 # Get checksums
 file="./$JAR_NAME-${BUILD_NUMBER}.jar"
-if [ -f $file ]; then
-  MD5=$(md5sum $file | awk '{ print $1 }')
-  SHA256=$(sha256sum $file | awk '{ print $1 }')
-  FILENAME=$(basename $file)
+if [ -f "$file" ]; then
+  MD5=$(md5sum "$file" | awk '{ print $1 }')
+  SHA256=$(sha256sum "$file" | awk '{ print $1 }')
+  FILENAME=$(basename "$file")
 
   {
     echo "|           | $FILENAME |"
@@ -102,6 +102,11 @@ fi
 
 # Delete current release tag
 if git show-ref --tags $CURRENT_TAG --quiet; then
-  gh release delete $CURRENT_TAG --cleanup-tag -y -R "${GITHUB_REPO}"
+  # `gh release delete` errors with "release not found" if the tag exists locally
+  # but has no associated GitHub Release (common on forks that pulled upstream tags
+  # via `git fetch --tags` but never published their own release). Tolerate that
+  # case so the script can proceed to publish a fresh release.
+  gh release delete $CURRENT_TAG --cleanup-tag -y -R "${GITHUB_REPO}" || \
+    echo "⚠️No existing GitHub Release for tag $CURRENT_TAG; skipping delete."
 fi
 echo "🚀Ready for release"

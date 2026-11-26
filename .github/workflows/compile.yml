@@ -1,0 +1,226 @@
+name: Compile
+
+# Compile the Leaf server (apply patches + build the mojmap paperclip JAR), then
+# publish the resulting JAR to the GitHub Releases page of this repository.
+#
+# This workflow is intentionally self-contained: it does NOT depend on the
+# upstream Winds-Studio/Leaf download API, the leafmc.one webhook, or any
+# host-side SCP/SSH secrets. It only requires the default `GITHUB_TOKEN`
+# that GitHub Actions provisions automatically, plus read access to the
+# Paper / Leaf Maven repositories (already public).
+#
+# Trigger policy:
+#   - workflow_dispatch:    a maintainer can run it on-demand from any branch
+#   - push to ver/1.21.11:  every push to the active release branch produces a
+#                            new rolling release tagged `compile-1.21.11-<run>`
+#                            so the latest compiled JAR is always downloadable.
+#
+# The workflow follows the same build commands documented in the repository
+# README (`./gradlew applyAllPatches && ./gradlew createMojmapPaperclipJar`)
+# and reuses the existing `scripts/prepareRelease.sh` helper to rename the JAR
+# and generate release notes from the commit log.
+#
+# Build environment note: upstream Winds-Studio/Leaf uses Blacksmith runners
+# (blacksmith-8vcpu-ubuntu-2404) and GraalVM JDK 21 with enterprise flags.
+# Blacksmith is only available to the upstream repo, so this fork uses
+# ubuntu-latest with Temurin JDK 21. GraalVM-specific -Dgraal.* flags are
+# omitted because they require a GraalVM JDK and are not needed for a
+# correct build (they only affect JIT optimization quality).
+
+on:
+  push:
+    branches: [ "ver/1.21.11" ]
+  workflow_dispatch:
+
+# Cancel any superseded run on the same ref so we don't pile up concurrent
+# releases for the same branch when several pushes land in quick succession.
+concurrency:
+  group: compile-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege: the workflow only needs to write releases (which requires
+# `contents: write`). It does not deploy to any external system, so no other
+# permission is granted.
+permissions:
+  contents: write
+
+jobs:
+  compile-and-release:
+    name: Compile and release JAR
+    runs-on: ubuntu-latest
+    env:
+      MC_VERSION: "1.21.11"
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # prepareRelease.sh uses `git describe` and the commit log
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: gradle
+
+      - name: Cache Gradle wrapper
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-compile-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-compile-${{ runner.os }}-
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "no-reply@github.com"
+          git config --global user.name "Github Actions"
+
+      - name: Apply patches (with retry for upstream maven outages)
+        # maven.leafmc.one (the Leaf upstream maven mirror) occasionally returns
+        # HTTP 502 Bad Gateway. The exact dev-SNAPSHOT versions of
+        # ConfigurationMaster-API, spark-api, and spark-paper that this build
+        # needs are not mirrored on JitPack or Sonatype OSS, so we cannot
+        # switch repositories. Instead, we retry the whole applyAllPatches task
+        # up to 4 times with a 60s pause between attempts. --refresh-dependencies
+        # makes Gradle ignore any cached-but-failed resolution from the prior
+        # attempt.
+        run: |
+          set +e
+          for attempt in 1 2 3 4; do
+            echo "::group::Apply patches — attempt $attempt/4"
+            ./gradlew applyAllPatches --stacktrace --no-daemon --refresh-dependencies
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -eq 0 ]; then
+              echo "✅ applyAllPatches succeeded on attempt $attempt"
+              exit 0
+            fi
+            if [ $attempt -lt 4 ]; then
+              echo "❌ applyAllPatches failed on attempt $attempt (exit $rc); retrying in 60s"
+              sleep 60
+            fi
+          done
+          echo "::error::applyAllPatches failed after 4 attempts. Most likely cause: maven.leafmc.one is returning 502 Bad Gateway. Wait for the upstream Leaf maven mirror to recover, then re-run this workflow manually from the Actions tab."
+          exit 1
+
+      - name: Create Mojmap Paperclip JAR
+        run: ./gradlew createMojmapPaperclipJar --stacktrace --no-daemon
+
+      - name: Verify JAR was produced
+        id: verify_jar
+        run: |
+          # The mojmap paperclip task emits
+          # leaf-server/build/libs/leaf-paperclip-<MC_VERSION>-R0.1-SNAPSHOT-mojmap.jar
+          # prepareRelease.sh renames it to ./leaf-<MC_VERSION>-<BUILD_NUMBER>.jar
+          # in the next step.
+          set -e
+          if ! ls leaf-server/build/libs/leaf-paperclip-*-mojmap.jar 1> /dev/null 2>&1; then
+            echo "::error::createMojmapPaperclipJar did not produce a JAR under leaf-server/build/libs/"
+            exit 1
+          fi
+          echo "✅ Mojmap Paperclip JAR built:"
+          ls -la leaf-server/build/libs/leaf-paperclip-*-mojmap.jar
+
+      - name: Prepare release notes and rename JAR
+        run: |
+          chmod +x ./scripts/prepareRelease.sh
+          ./scripts/prepareRelease.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+          MC_VERSION: ${{ env.MC_VERSION }}
+          BUILD_NUMBER: ${{ env.BUILD_NUMBER }}
+
+      - name: Calculate SHA-256
+        id: hash
+        run: |
+          FILE_NAME="leaf-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}.jar"
+          if [ ! -f "$FILE_NAME" ]; then
+            echo "::error::Expected release JAR $FILE_NAME was not found after prepareRelease.sh"
+            exit 1
+          fi
+          HASH=$(sha256sum "$FILE_NAME" | awk '{ print $1 }')
+          echo "sha256=$HASH" >> $GITHUB_OUTPUT
+          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "✅ SHA-256: $HASH"
+
+      - name: Compile summary
+        run: |
+          echo "## Compile summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **MC version:** ${{ env.MC_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build number:** ${{ env.BUILD_NUMBER }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **JAR:** \`${{ steps.hash.outputs.file_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA-256:** \`${{ steps.hash.outputs.sha256 }}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Release JAR to GitHub Releases
+        id: gh_release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Rolling tag so every push to ver/1.21.11 produces a fresh, downloadable build
+          # without the maintainer having to manually bump a version number. The tag
+          # moves forward with each successful run.
+          name: "Leaf ${{ env.MC_VERSION }} (compile #${{ env.BUILD_NUMBER }})"
+          tag_name: "compile-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}"
+          files: "./${{ steps.hash.outputs.file_name }}"
+          body_path: "./release_notes.md"
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          target_commitish: "${{ github.sha }}"
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+        # softprops/action-gh-release@v2 retries internally 3 times, but GitHub's
+        # releases API occasionally returns 500/502 during multi-minute outages.
+        # Use continue-on-error + an explicit retry step below for resilience.
+        continue-on-error: true
+
+      - name: Retry release upload via gh CLI (if action-gh-release failed)
+        if: steps.gh_release.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="compile-${MC_VERSION}-${BUILD_NUMBER}"
+          FILE="./leaf-${MC_VERSION}-${BUILD_NUMBER}.jar"
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            echo "::group::Release upload attempt $attempt/10"
+            # If a release for this tag already exists (from the failed action-gh-release
+            # step), delete it first so we get a clean upload rather than an orphan
+            # release with no assets.
+            existing_id=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq '.id' 2>/dev/null || true)
+            if [ -n "$existing_id" ]; then
+              echo "Deleting orphan release $existing_id (tag $TAG) before retry"
+              gh api -X DELETE "/repos/${GITHUB_REPOSITORY}/releases/${existing_id}" || true
+              gh api -X DELETE "/repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" || true
+              sleep 5
+            fi
+            # Create the release with the JAR attached.
+            if gh release create "$TAG" "$FILE" \
+                --title "Leaf ${MC_VERSION} (compile #${BUILD_NUMBER})" \
+                --notes-file ./release_notes.md \
+                --prerelease \
+                --target "$GITHUB_SHA"; then
+              echo "✅ Release $TAG created with asset on attempt $attempt"
+              exit 0
+            fi
+            echo "❌ Attempt $attempt failed; sleeping $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to create release after 10 attempts. GitHub's releases API may be down. Re-run this workflow manually when GitHub is healthy."
+          exit 1
+
+      - name: Upload JAR as workflow artifact
+        if: always()  # Always upload the artifact so the JAR is downloadable from the Actions run even if release upload fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: leaf-${{ env.MC_VERSION }}-${{ env.BUILD_NUMBER }}
+          path: "./${{ steps.hash.outputs.file_name }}"
+          if-no-files-found: error
+          retention-days: 30
